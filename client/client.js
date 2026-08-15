@@ -167,7 +167,12 @@ window.__ModuleLoader__.load({
 		//#endregion
 
 		//#region Turn-complete firing (shared by monitor and preview)
+		// `hostActive` is set once the host HTTP API answers: from then on the
+		// HOST fires the macOS notification (works with the GUI closed), so the
+		// browser-side monitor must stay silent to avoid double notifications.
+		let hostActive = false;
 		function fireNotification() {
+			if (hostActive) return;
 			const cfg = configStore.getSnapshot();
 			if (!cfg.enabled) return;
 			try {
@@ -288,6 +293,19 @@ window.__ModuleLoader__.load({
 
 			const sessions = ctx.get("sessions");
 
+			// Plugin-lifetime host probe: once the host API answers, the host owns
+			// notification firing (macOS notification even with the GUI closed)
+			// and the browser monitor must defer to it.
+			ctx.effect(() => {
+				let cancelled = false;
+				apiStatus().then((v) => {
+					if (cancelled) return;
+					hostActive = true;
+					configStore.set(v);
+				}).catch(() => {});
+				return () => { cancelled = true; };
+			}, "notifications: host-ownership probe");
+
 			// Plugin-lifetime turn-complete monitor: lives in apply, NOT in the
 			// settings card, so it keeps watching after the settings panel closes.
 			ctx.effect(() => {
@@ -314,10 +332,12 @@ window.__ModuleLoader__.load({
 
 				// Prefer the host value when the host API is reachable (after the
 				// host half is loaded); otherwise keep the localStorage snapshot.
+				// A reachable API also marks the host as the notification owner.
 				useEffect(() => {
 					let live = true;
 					apiStatus().then((v) => {
 						if (!live) return;
+						hostActive = true;
 						configStore.set(v);
 						setError(null);
 					}).catch(() => { /* host route absent — localStorage only */ });

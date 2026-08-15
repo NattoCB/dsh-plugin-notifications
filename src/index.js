@@ -164,7 +164,11 @@ class NotificationsService {
 			const url = new URL(req.url, 'http://x');
 			const path = url.pathname.replace(/^\/notifications\/?/, '');
 			if (req.method === 'GET' && path === 'status') {
-				return send(200, { ok: true, ...this.getConfig() });
+				// `hostNotify` advertises that THIS loaded host half owns
+				// notification firing (agent/status -> osascript); the client
+				// defers to the host only when this flag is present, so a stale
+				// host without the listener does not silence notifications.
+				return send(200, { ok: true, hostNotify: true, ...this.getConfig() });
 			}
 			if (req.method === 'POST' && path === 'update') {
 				const body = await readBody();

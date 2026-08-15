@@ -109,7 +109,9 @@ window.__ModuleLoader__.load({
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const json = await res.json().catch(() => { throw new Error("bad response"); });
 			if (!json || json.ok === false) throw new Error(json && json.error ? json.error : "unknown");
-			return normalize(json);
+			const cfg = normalize(json);
+			cfg.hostNotify = json.hostNotify === true;
+			return cfg;
 		}
 		async function apiUpdate(patch) {
 			const res = await fetch("/notifications/update", {
@@ -300,7 +302,10 @@ window.__ModuleLoader__.load({
 				let cancelled = false;
 				apiStatus().then((v) => {
 					if (cancelled) return;
-					hostActive = true;
+					// Defer only when the loaded host half actually owns firing
+					// (hostNotify flag); an older host without the listener must
+					// not silence the browser monitor.
+					hostActive = v.hostNotify === true;
 					configStore.set(v);
 				}).catch(() => {});
 				return () => { cancelled = true; };
@@ -332,12 +337,11 @@ window.__ModuleLoader__.load({
 
 				// Prefer the host value when the host API is reachable (after the
 				// host half is loaded); otherwise keep the localStorage snapshot.
-				// A reachable API also marks the host as the notification owner.
 				useEffect(() => {
 					let live = true;
 					apiStatus().then((v) => {
 						if (!live) return;
-						hostActive = true;
+						hostActive = v.hostNotify === true;
 						configStore.set(v);
 						setError(null);
 					}).catch(() => { /* host route absent — localStorage only */ });

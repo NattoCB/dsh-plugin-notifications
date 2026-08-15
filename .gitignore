@@ -1,0 +1,33 @@
+# ── Dependencies / build ──
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# ── Logs & debug artifacts ──
+*.log
+*.zstd
+*.jsonl
+npm-debug.log*
+
+# ── OS / editor cruft ──
+.DS_Store
+.DS_Store?
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# ── Secrets / credentials (never commit) ──
+.credentials*
+*.key
+*.pem
+.env
+.env.*
+secrets.*
+
+# ── Sensitive agent intermediate artifacts (scrubbed before publish) ──
+# 敏感产物：本地路径、用户名、token、内部项目名等已在发布前脱敏，不入库。
+*debug*/
+*.session/

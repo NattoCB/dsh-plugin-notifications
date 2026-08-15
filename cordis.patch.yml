@@ -1,0 +1,11 @@
+# DSH bundle patch for the Notifications plugin.
+# Registers the durable `notifications` settings namespace on the host so the
+# General-settings toggle values persist to $DSH_HOME/settings.yaml. The card
+# UI and the round-completion detection run on the client (see client/client.js).
+
+- insert:
+		- id: notifications
+			name: 'dsh-plugin-notifications'
+			inject:
+				- settings
+			config: {}

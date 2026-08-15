@@ -6,9 +6,6 @@ window.__ModuleLoader__.load({
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		let react_jsx_runtime = require("react/jsx-runtime");
 		let react = require("react");
-		let _deepseek_ai_dsh_client_runtime_client = require("@deepseek-ai/dsh-client-runtime/client");
-		let _deepseek_ai_dsh_client_web_react = require("@deepseek-ai/dsh-client-web-react");
-		let _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
 
 		const { jsx, jsxs, Fragment } = react_jsx_runtime;
 		const { useState, useEffect, useCallback, useRef } = react;
@@ -25,9 +22,8 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 
-		//#region Settings namespace + locales
+		//#region Locales
 		const NS = "notifications";
-		const SETTINGS_NS = "notifications";
 		const zh = {
 			"card.title": "对话完成通知",
 			"card.desc": "每轮对话完成后弹出系统通知，可选提示音。",
@@ -41,7 +37,7 @@ window.__ModuleLoader__.load({
 			"tone.crisp": "清脆",
 			"tone.low": "低沉",
 			"test": "试听提示音",
-			"test.permission": "需要授权通知权限才能试听"
+			"err.load": "读取通知配置失败"
 		};
 		const en = {
 			"card.title": "Turn-complete notifications",
@@ -56,13 +52,11 @@ window.__ModuleLoader__.load({
 			"tone.crisp": "Crisp",
 			"tone.low": "Low",
 			"test": "Preview chime",
-			"test.permission": "Grant notification permission to preview"
+			"err.load": "Could not read notification settings"
 		};
 		//#endregion
 
 		//#region Web Audio chime (no asset files, works offline)
-		// Synthesize a short two-oscillator chime per tone. AudioContext must be
-		// created/resumed from a user gesture, so callers resume it before play.
 		function playChime(tone) {
 			try {
 				const Ctx = typeof window !== "undefined" && (window.AudioContext || window.webkitAudioContext);
@@ -93,10 +87,57 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 
+		//#region Config store: host HTTP API when available, localStorage fallback
+		// The Web settings RPC only exposes an allowlisted set of namespaces, so
+		// this plugin persists through its own host route (/notifications/*).
+		// Until the host half is (re)loaded — it needs a dsh restart — the card
+		// keeps working on localStorage, and adopts the host value when the API
+		// becomes reachable.
+		const LS_KEY = "dsh-plugin-notifications.config";
+		const TONES = ["soft", "crisp", "low"];
+		const DEFAULTS = { enabled: false, sound: true, tone: "soft" };
+
+		function normalize(v) {
+			return {
+				enabled: !!v.enabled,
+				sound: v.sound !== false,
+				tone: TONES.includes(v.tone) ? v.tone : "soft"
+			};
+		}
+		function readLocal() {
+			try {
+				const raw = window.localStorage.getItem(LS_KEY);
+				if (!raw) return null;
+				return normalize(JSON.parse(raw));
+			} catch (_) { return null; }
+		}
+		function writeLocal(cfg) {
+			try { window.localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (_) {}
+		}
+		async function apiStatus() {
+			const res = await fetch("/notifications/status", { headers: { accept: "application/json" } });
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			const json = await res.json().catch(() => { throw new Error("bad response"); });
+			if (!json || json.ok === false) throw new Error(json && json.error ? json.error : "unknown");
+			return normalize(json);
+		}
+		async function apiUpdate(patch) {
+			const res = await fetch("/notifications/update", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(patch)
+			});
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			const json = await res.json().catch(() => { throw new Error("bad response"); });
+			if (!json || json.ok === false) throw new Error(json && json.error ? json.error : "unknown");
+			return normalize(json);
+		}
+		//#endregion
+
 		//#region Turn-complete monitor (browser-side running edge)
 		// Watches the current session's `running` flag via the runtime sessions
-		// list. The true -> false edge is a turn completing. Uses a ref so the
-		// effect never re-arms with stale config.
+		// list. The true -> false edge is a turn completing. `getConfig` is read
+		// through a ref so the effect never captures stale config.
 		function useTurnCompleteMonitor(sessions, getConfig, enabled) {
 			const cfgRef = useRef(getConfig);
 			cfgRef.current = getConfig;
@@ -106,8 +147,8 @@ window.__ModuleLoader__.load({
 				if (!list || typeof list.subscribe !== "function") return;
 				let prevRunning = false;
 				const fire = () => {
-					const { enabled, sound, tone } = cfgRef.current();
-					if (!enabled) return;
+					const { enabled: on, sound, tone } = cfgRef.current();
+					if (!on) return;
 					try {
 						if ("Notification" in window && Notification.permission === "granted") {
 							new Notification("DSH", { body: "本轮对话已完成。" });
@@ -116,7 +157,7 @@ window.__ModuleLoader__.load({
 					if (sound) playChime(tone);
 				};
 				const check = () => {
-					const snap = sessions.list.getSnapshot();
+					const snap = list.getSnapshot();
 					const id = snap.current;
 					if (id === void 0) { prevRunning = false; return; }
 					const entry = snap.byId && snap.byId[id];
@@ -125,7 +166,7 @@ window.__ModuleLoader__.load({
 					prevRunning = running;
 				};
 				check();
-				const off = sessions.list.subscribe(check);
+				const off = list.subscribe(check);
 				return off;
 			}, [enabled, sessions]);
 		}
@@ -133,10 +174,8 @@ window.__ModuleLoader__.load({
 
 		//#region Card component
 		function NotificationsCard(props) {
-			const { t, useStore, enabled, sound, tone, onEnabled, onSound, onTone } = props;
+			const { t, enabled, sound, tone, error, onEnabled, onSound, onTone } = props;
 			const [previewing, setPreviewing] = useState(false);
-			// Subscribe unconditionally (rules of hooks); re-renders on settings load.
-			if (useStore) useStore((s) => s.status);
 
 			const requestAndPreview = useCallback(() => {
 				setPreviewing(true);
@@ -149,10 +188,6 @@ window.__ModuleLoader__.load({
 					}
 				} catch (_) { done(); }
 			}, [tone]);
-
-			// `useStore` is the injected settings-scope hook; bind it so the card
-			// re-renders if the value changes elsewhere (though this card owns it).
-			if (useStore) useStore((s) => s.value);
 
 			return jsxs("div", { className: "ntf_card", children: [
 				jsxs("div", { className: "ntf_head", children: [
@@ -179,12 +214,13 @@ window.__ModuleLoader__.load({
 							className: "ntf_select",
 							value: tone,
 							disabled: !enabled,
-							onChange: (e) => onTone(e.target.value)
-						}, [
-							jsx("option", { key: "soft", value: "soft", children: t("tone.soft") }),
-							jsx("option", { key: "crisp", value: "crisp", children: t("tone.crisp") }),
-							jsx("option", { key: "low", value: "low", children: t("tone.low") })
-						]),
+							onChange: (e) => onTone(e.target.value),
+							children: [
+								jsx("option", { key: "soft", value: "soft", children: t("tone.soft") }),
+								jsx("option", { key: "crisp", value: "crisp", children: t("tone.crisp") }),
+								jsx("option", { key: "low", value: "low", children: t("tone.low") })
+							]
+						}),
 						jsx("button", {
 							type: "button",
 							className: "ntf_test",
@@ -194,6 +230,7 @@ window.__ModuleLoader__.load({
 						})
 					] })
 				] }),
+				error ? jsx("div", { className: "ntf_hint", style: { color: "var(--dsw-alias-state-error-primary)" }, children: error }) : null,
 				!enabled ? jsx("div", { className: "ntf_hint", children: t("row.enabled.hint") }) : null
 			] });
 		}
@@ -236,45 +273,53 @@ window.__ModuleLoader__.load({
 		//#endregion
 
 		//#region Client plugin body
-		const inject = ["slots", "locale", "connection", "remote", "settingsScope"];
+		const inject = ["slots", "locale", "sessions"];
 
 		function apply(ctx) {
 			const t = ctx.locale.bind(NS);
 			ctx.effect(() => ctx.locale.register(NS, { zh, en }), "notifications: dictionaries");
 
-			const controller = ctx.settingsScope.bind({ namespace: SETTINGS_NS });
-			const useStore = (0, _deepseek_ai_dsh_client_web_react.bindSnapshotSelector)(controller);
-
-			const read = () => {
-				const s = controller.getSnapshot();
-				const v = s && s.value;
-				return {
-					enabled: !!(v && v.enabled),
-					sound: v && v.sound !== false,
-					tone: (v && (v.tone === "crisp" || v.tone === "low")) ? v.tone : "soft"
-				};
-			};
-
-			// `sessions` is the client runtime service that exposes the live list
-			// (incl. the current session's running flag). Read once at apply time;
-			// the monitor subscribes to it.
 			const sessions = ctx.get("sessions");
+
 			const NotificationsEntry = (props) => {
-				// Re-render whenever the settings scope publishes (incl. the async
-				// initial load), so the toggles reflect persisted values.
-				useStore((s) => s.status);
-				const cfg = read();
-				useTurnCompleteMonitor(sessions, () => read(), cfg.enabled);
-				const update = (patch) => {
-					const cur = read();
-					controller.set(Object.assign({}, cur, patch));
-				};
+				const [cfg, setCfg] = useState(() => readLocal() || DEFAULTS);
+				const [error, setError] = useState(null);
+				const cfgRef = useRef(cfg);
+				cfgRef.current = cfg;
+
+				// Prefer the host value when the host API is reachable (after the
+				// host half is loaded); otherwise keep the localStorage snapshot.
+				useEffect(() => {
+					let live = true;
+					apiStatus().then((v) => {
+						if (!live) return;
+						setCfg(v);
+						writeLocal(v);
+						setError(null);
+					}).catch(() => { /* host route absent — localStorage only */ });
+					return () => { live = false; };
+				}, []);
+
+				useTurnCompleteMonitor(sessions, () => cfgRef.current, cfg.enabled);
+
+				const update = useCallback((patch) => {
+					const optimistic = normalize(Object.assign({}, cfgRef.current, patch));
+					setCfg(optimistic);
+					writeLocal(optimistic);
+					setError(null);
+					// Best effort: persist to the host when its API is loaded.
+					apiUpdate(patch).then((v) => {
+						setCfg(v);
+						writeLocal(v);
+					}).catch(() => {});
+				}, []);
+
 				return jsx(NotificationsCard, Object.assign({}, props, {
 					t,
-					useStore,
 					enabled: cfg.enabled,
 					sound: cfg.sound,
 					tone: cfg.tone,
+					error,
 					onEnabled: (v) => update({ enabled: v }),
 					onSound: (v) => update({ sound: v }),
 					onTone: (v) => update({ tone: v })

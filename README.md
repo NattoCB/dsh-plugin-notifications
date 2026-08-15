@@ -25,10 +25,16 @@ every time a conversation turn completes.
 
 ### 行为说明
 
-- **Host 端**：注册持久化设置命名空间 `notifications`，使开关值写入 `$DSH_HOME/settings.yaml`（键 `notifications`）。
+- **Host 端**：注册持久化设置命名空间 `notifications`，并暴露自有 HTTP API
+  `/notifications/status`（读）与 `/notifications/update`（写）；写入经 host 侧
+  `settings.update` 落到 `$DSH_HOME/settings.yaml`（键 `notifications`）。
 - **Client 端**：把卡片渲染进通用区的 `settings.general.item` 插槽，并订阅运行时 `sessions` 列表，
   监听当前会话 `running` 的「true → false」边沿（即一轮对话结束）。
 - 检测发生在浏览器侧：触发的是「停止运行时正在选中」的那个会话。
+- 说明：Web 端的 `settings.mutate` RPC 只放行内置命名空间白名单，第三方命名空间无法走该通道；
+  因此本插件走自有 HTTP API（与 petdex / wechat-bridge 同模式）。host 半载入前（例如刚改完代码、
+  尚未重启 `dsh web`），卡片自动降级为浏览器 localStorage，交互与持久化在单浏览器内照常可用；
+  host 半载入后自动切换到 settings.yaml 并同步最新值。
 
 ### 设置（写入 `settings.yaml`）
 
@@ -65,12 +71,20 @@ notifications:
 
 ### How it works
 
-- **Host half** registers the durable `notifications` settings namespace so the
-  toggle values persist to `$DSH_HOME/settings.yaml` (key `notifications`).
+- **Host half** registers the durable `notifications` settings namespace and
+  exposes its own HTTP API — `GET /notifications/status`, `POST /notifications/update` —
+  persisting through host-side `settings.update` into `$DSH_HOME/settings.yaml`
+  (key `notifications`).
 - **Client half** renders the card into the General section's `settings.general.item`
   slot and watches the runtime `sessions` list for the running→idle edge.
 - Detection is browser-side: it fires for whichever session is currently selected
   when it stops running.
+- Note: the Web `settings.mutate` RPC only admits a built-in namespace allowlist,
+  so third-party namespaces cannot ride it; this plugin uses its own HTTP API
+  (same pattern as the petdex / wechat-bridge bundles). Until the host half is
+  loaded (e.g. right after a code change, before restarting `dsh web`), the card
+  degrades to browser localStorage — interaction and persistence keep working in
+  that browser — and switches to settings.yaml once the host half is live.
 
 ### Settings (settings.yaml)
 

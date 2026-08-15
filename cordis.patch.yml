@@ -4,8 +4,8 @@
 # UI and the round-completion detection run on the client (see client/client.js).
 
 - insert:
-		- id: notifications
-			name: 'dsh-plugin-notifications'
-			inject:
-				- settings
-			config: {}
+    - id: notifications
+      name: 'dsh-plugin-notifications'
+      inject:
+        - settings
+      config: {}

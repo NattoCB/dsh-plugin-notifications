@@ -1,9 +1,5 @@
 # DSH Notifications Plugin / DSH 对话完成通知插件
 
-> Author / 作者: **nattocb**
-> Platform / 平台: DeepSeek Harness (DSH) — `dsh web` profile bundle plugin
-> License / 许可证: MIT
-
 A DSH bundle plugin that adds a **Notifications** card to **Settings → General**.
 When enabled, it pops a **system notification** (and an optional synthesized chime)
 every time a conversation turn completes.

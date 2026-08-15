@@ -8,7 +8,7 @@ window.__ModuleLoader__.load({
 		let react = require("react");
 
 		const { jsx, jsxs, Fragment } = react_jsx_runtime;
-		const { useState, useEffect, useCallback, useRef } = react;
+		const { useState, useEffect, useCallback, useSyncExternalStore } = react;
 
 		//#region CSS (scoped to the notification card)
 		const css = ".ntf_card{border-bottom:1px solid var(--dsw-alias-border-l2);flex-direction:column;gap:14px;padding:16px 0;display:flex}.ntf_head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.ntf_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500;line-height:22px}.ntf_desc{color:var(--dsw-alias-label-tertiary);margin-top:2px;font-size:12px;line-height:18px}.ntf_row{display:flex;align-items:center;justify-content:space-between;gap:12px}.ntf_label{color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}.ntf_hint{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}.ntf_sub{display:flex;flex-direction:column;gap:6px;padding-left:2px}.ntf_select{appearance:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;height:34px;border-radius:8px;padding:0 30px 0 12px;font-size:13px;line-height:1.5;background-image:linear-gradient(45deg,transparent 50%,var(--dsw-alias-label-tertiary) 50%),linear-gradient(135deg,var(--dsw-alias-label-tertiary) 50%,transparent 50%);background-position:calc(100% - 16px) 14px,calc(100% - 11px) 14px;background-size:5px 5px,5px 5px;background-repeat:no-repeat;cursor:pointer}.ntf_select:focus-visible{outline:none;border-color:var(--dsw-alias-brand-primary)}.ntf_select:disabled{color:var(--dsw-alias-label-tertiary);cursor:default}.ntf_test{font:inherit;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:4px 12px;font-size:12px;line-height:1.5}.ntf_test:hover:not(:disabled){color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}.ntf_test:disabled{cursor:default;opacity:.45}";
@@ -56,43 +56,10 @@ window.__ModuleLoader__.load({
 		};
 		//#endregion
 
-		//#region Web Audio chime (no asset files, works offline)
-		function playChime(tone) {
-			try {
-				const Ctx = typeof window !== "undefined" && (window.AudioContext || window.webkitAudioContext);
-				if (!Ctx) return;
-				const ctx = new Ctx();
-				const profiles = {
-					soft: { freqs: [523.25, 783.99], type: "sine", gain: 0.18, dur: 0.9 },
-					crisp: { freqs: [659.25, 987.77], type: "triangle", gain: 0.16, dur: 0.7 },
-					low: { freqs: [261.63, 392.0], type: "sine", gain: 0.22, dur: 1.1 }
-				};
-				const p = profiles[tone] || profiles.soft;
-				const now = ctx.currentTime;
-				p.freqs.forEach((f, i) => {
-					const osc = ctx.createOscillator();
-					const g = ctx.createGain();
-					osc.type = p.type;
-					osc.frequency.value = f;
-					const start = now + i * 0.12;
-					g.gain.setValueAtTime(0, start);
-					g.gain.linearRampToValueAtTime(p.gain, start + 0.02);
-					g.gain.exponentialRampToValueAtTime(0.0001, start + p.dur);
-					osc.connect(g).connect(ctx.destination);
-					osc.start(start);
-					osc.stop(start + p.dur + 0.05);
-				});
-				setTimeout(() => { try { ctx.close(); } catch (_) {} }, (p.dur + 0.4) * 1000);
-			} catch (_) { /* audio unavailable — ignore */ }
-		}
-		//#endregion
-
-		//#region Config store: host HTTP API when available, localStorage fallback
-		// The Web settings RPC only exposes an allowlisted set of namespaces, so
-		// this plugin persists through its own host route (/notifications/*).
-		// Until the host half is (re)loaded — it needs a dsh restart — the card
-		// keeps working on localStorage, and adopts the host value when the API
-		// becomes reachable.
+		//#region Config store (module-level, survives settings-panel unmount)
+		// The monitor lives at the plugin level (see apply), so it must read
+		// config from a store that outlives the settings card. The card renders
+		// from the same store via useSyncExternalStore.
 		const LS_KEY = "dsh-plugin-notifications.config";
 		const TONES = ["soft", "crisp", "low"];
 		const DEFAULTS = { enabled: false, sound: true, tone: "soft" };
@@ -114,6 +81,29 @@ window.__ModuleLoader__.load({
 		function writeLocal(cfg) {
 			try { window.localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (_) {}
 		}
+
+		const configStore = {
+			value: readLocal() || DEFAULTS,
+			listeners: new Set(),
+			getSnapshot() {
+				return this.value;
+			},
+			subscribe(listener) {
+				this.listeners.add(listener);
+				return () => { this.listeners.delete(listener); };
+			},
+			set(next) {
+				this.value = normalize(next);
+				writeLocal(this.value);
+				for (const listener of this.listeners) listener();
+			}
+		};
+		// Bound faces: useSyncExternalStore loses `this` on bare method refs.
+		const configSubscribe = (listener) => configStore.subscribe(listener);
+		const configSnapshot = () => configStore.getSnapshot();
+		//#endregion
+
+		//#region Host HTTP API (settings RPC is allowlisted; use our own route)
 		async function apiStatus() {
 			const res = await fetch("/notifications/status", { headers: { accept: "application/json" } });
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -134,52 +124,69 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 
-		//#region Turn-complete monitor (browser-side running edge)
-		// Watches the current session's `running` flag via the runtime sessions
-		// list. The true -> false edge is a turn completing. `getConfig` is read
-		// through a ref so the effect never captures stale config.
-		function useTurnCompleteMonitor(sessions, getConfig, enabled) {
-			const cfgRef = useRef(getConfig);
-			cfgRef.current = getConfig;
-			useEffect(() => {
-				if (!enabled || !sessions) return;
-				const list = sessions.list;
-				if (!list || typeof list.subscribe !== "function") return;
-				let prevRunning = false;
-				const fire = () => {
-					const { enabled: on, sound, tone } = cfgRef.current();
-					if (!on) return;
-					try {
-						if ("Notification" in window && Notification.permission === "granted") {
-							new Notification("DSH", { body: "本轮对话已完成。" });
-						}
-					} catch (_) {}
-					if (sound) playChime(tone);
+		//#region Web Audio chime (no asset files, works offline)
+		// One shared AudioContext: browsers suspend contexts created without a
+		// user gesture, so the preview button (a gesture) warms it up; the
+		// monitor reuses it and resumes before playing.
+		let sharedAudio = null;
+		function getAudioContext() {
+			try {
+				const Ctx = typeof window !== "undefined" && (window.AudioContext || window.webkitAudioContext);
+				if (!Ctx) return null;
+				if (sharedAudio === null) sharedAudio = new Ctx();
+				if (sharedAudio.state === "suspended") sharedAudio.resume().catch(() => {});
+				return sharedAudio;
+			} catch (_) { return null; }
+		}
+		function playChime(tone) {
+			try {
+				const ctx = getAudioContext();
+				if (!ctx) return;
+				const profiles = {
+					soft: { freqs: [523.25, 783.99], type: "sine", gain: 0.18, dur: 0.9 },
+					crisp: { freqs: [659.25, 987.77], type: "triangle", gain: 0.16, dur: 0.7 },
+					low: { freqs: [261.63, 392.0], type: "sine", gain: 0.22, dur: 1.1 }
 				};
-				const check = () => {
-					const snap = list.getSnapshot();
-					const id = snap.current;
-					if (id === void 0) { prevRunning = false; return; }
-					const entry = snap.byId && snap.byId[id];
-					const running = !!(entry && entry.running);
-					if (prevRunning && !running) fire();
-					prevRunning = running;
-				};
-				check();
-				const off = list.subscribe(check);
-				return off;
-			}, [enabled, sessions]);
+				const p = profiles[tone] || profiles.soft;
+				const now = ctx.currentTime;
+				p.freqs.forEach((f, i) => {
+					const osc = ctx.createOscillator();
+					const g = ctx.createGain();
+					osc.type = p.type;
+					osc.frequency.value = f;
+					const start = now + i * 0.12;
+					g.gain.setValueAtTime(0, start);
+					g.gain.linearRampToValueAtTime(p.gain, start + 0.02);
+					g.gain.exponentialRampToValueAtTime(0.0001, start + p.dur);
+					osc.connect(g).connect(ctx.destination);
+					osc.start(start);
+					osc.stop(start + p.dur + 0.05);
+				});
+			} catch (_) { /* audio unavailable — ignore */ }
+		}
+		//#endregion
+
+		//#region Turn-complete firing (shared by monitor and preview)
+		function fireNotification() {
+			const cfg = configStore.getSnapshot();
+			if (!cfg.enabled) return;
+			try {
+				if ("Notification" in window && Notification.permission === "granted") {
+					new Notification("DSH", { body: "本轮对话已完成。" });
+				}
+			} catch (_) {}
+			if (cfg.sound) playChime(cfg.tone);
 		}
 		//#endregion
 
 		//#region Card component
 		function NotificationsCard(props) {
-			const { t, enabled, sound, tone, error, onEnabled, onSound, onTone } = props;
+			const { t, cfg, error, onEnabled, onSound, onTone } = props;
 			const [previewing, setPreviewing] = useState(false);
 
 			const requestAndPreview = useCallback(() => {
 				setPreviewing(true);
-				const done = () => { playChime(tone); setPreviewing(false); };
+				const done = () => { playChime(cfg.tone); setPreviewing(false); };
 				try {
 					if ("Notification" in window && Notification.permission === "default") {
 						Notification.requestPermission().then(done, done);
@@ -187,7 +194,7 @@ window.__ModuleLoader__.load({
 						done();
 					}
 				} catch (_) { done(); }
-			}, [tone]);
+			}, [cfg.tone]);
 
 			return jsxs("div", { className: "ntf_card", children: [
 				jsxs("div", { className: "ntf_head", children: [
@@ -195,14 +202,14 @@ window.__ModuleLoader__.load({
 						jsx("div", { className: "ntf_title", children: t("card.title") }),
 						jsx("div", { className: "ntf_desc", children: t("card.desc") })
 					] }),
-					jsx(Toggle, { checked: enabled, onChange: onEnabled })
+					jsx(Toggle, { checked: cfg.enabled, onChange: onEnabled })
 				] }),
 				jsxs("div", { className: "ntf_row", children: [
 					jsxs("div", { className: "ntf_sub", children: [
 						jsx("span", { className: "ntf_label", children: t("row.sound") }),
 						jsx("span", { className: "ntf_hint", children: t("row.sound.hint") })
 					] }),
-					jsx(Toggle, { checked: sound, onChange: onSound, disabled: !enabled })
+					jsx(Toggle, { checked: cfg.sound, onChange: onSound, disabled: !cfg.enabled })
 				] }),
 				jsxs("div", { className: "ntf_row", children: [
 					jsxs("div", { className: "ntf_sub", children: [
@@ -212,8 +219,8 @@ window.__ModuleLoader__.load({
 					jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [
 						jsx("select", {
 							className: "ntf_select",
-							value: tone,
-							disabled: !enabled,
+							value: cfg.tone,
+							disabled: !cfg.enabled,
 							onChange: (e) => onTone(e.target.value),
 							children: [
 								jsx("option", { key: "soft", value: "soft", children: t("tone.soft") }),
@@ -224,14 +231,14 @@ window.__ModuleLoader__.load({
 						jsx("button", {
 							type: "button",
 							className: "ntf_test",
-							disabled: !enabled || previewing,
+							disabled: !cfg.enabled || previewing,
 							onClick: requestAndPreview,
 							children: t("test")
 						})
 					] })
 				] }),
 				error ? jsx("div", { className: "ntf_hint", style: { color: "var(--dsw-alias-state-error-primary)" }, children: error }) : null,
-				!enabled ? jsx("div", { className: "ntf_hint", children: t("row.enabled.hint") }) : null
+				!cfg.enabled ? jsx("div", { className: "ntf_hint", children: t("row.enabled.hint") }) : null
 			] });
 		}
 
@@ -281,11 +288,29 @@ window.__ModuleLoader__.load({
 
 			const sessions = ctx.get("sessions");
 
+			// Plugin-lifetime turn-complete monitor: lives in apply, NOT in the
+			// settings card, so it keeps watching after the settings panel closes.
+			ctx.effect(() => {
+				const list = sessions && sessions.list;
+				if (!list || typeof list.subscribe !== "function") return;
+				let prevRunning = false;
+				const check = () => {
+					const snap = list.getSnapshot();
+					const id = snap.current;
+					if (id === void 0) { prevRunning = false; return; }
+					const entry = snap.byId && snap.byId[id];
+					const running = !!(entry && entry.running);
+					if (prevRunning && !running) fireNotification();
+					prevRunning = running;
+				};
+				check();
+				const off = list.subscribe(check);
+				return off;
+			}, "notifications: turn-complete monitor");
+
 			const NotificationsEntry = (props) => {
-				const [cfg, setCfg] = useState(() => readLocal() || DEFAULTS);
+				const cfg = useSyncExternalStore(configSubscribe, configSnapshot);
 				const [error, setError] = useState(null);
-				const cfgRef = useRef(cfg);
-				cfgRef.current = cfg;
 
 				// Prefer the host value when the host API is reachable (after the
 				// host half is loaded); otherwise keep the localStorage snapshot.
@@ -293,32 +318,25 @@ window.__ModuleLoader__.load({
 					let live = true;
 					apiStatus().then((v) => {
 						if (!live) return;
-						setCfg(v);
-						writeLocal(v);
+						configStore.set(v);
 						setError(null);
 					}).catch(() => { /* host route absent — localStorage only */ });
 					return () => { live = false; };
 				}, []);
 
-				useTurnCompleteMonitor(sessions, () => cfgRef.current, cfg.enabled);
-
 				const update = useCallback((patch) => {
-					const optimistic = normalize(Object.assign({}, cfgRef.current, patch));
-					setCfg(optimistic);
-					writeLocal(optimistic);
+					const optimistic = normalize(Object.assign({}, configStore.getSnapshot(), patch));
+					configStore.set(optimistic);
 					setError(null);
 					// Best effort: persist to the host when its API is loaded.
 					apiUpdate(patch).then((v) => {
-						setCfg(v);
-						writeLocal(v);
+						configStore.set(v);
 					}).catch(() => {});
 				}, []);
 
 				return jsx(NotificationsCard, Object.assign({}, props, {
 					t,
-					enabled: cfg.enabled,
-					sound: cfg.sound,
-					tone: cfg.tone,
+					cfg,
 					error,
 					onEnabled: (v) => update({ enabled: v }),
 					onSound: (v) => update({ sound: v }),

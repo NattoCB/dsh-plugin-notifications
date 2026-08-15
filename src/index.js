@@ -12,7 +12,7 @@
 //
 // The chime is synthesized to PCM in-process with the SAME profiles the
 // settings card previews in Web Audio (same frequencies, waveforms, envelope),
-// written to a temp WAV and played with `afplay` — so the configured tone and
+// written to a temp WAV and played by terminal-notifier — so the configured tone and
 // the real sound always match.
 //
 // Persistence path: the Web settings RPC only exposes a fixed allowlist of
@@ -45,6 +45,11 @@ const SETTINGS_SCHEMA = z.object({
 
 const TONES = ['soft', 'crisp', 'low'];
 const DEFAULTS = { enabled: false, sound: true, tone: 'soft' };
+
+// terminal-notifier ships via Homebrew; the dsh launchd PATH does not include
+// /opt/homebrew/bin, so use the absolute path (homebrew prefix is stable on
+// Apple Silicon).
+const NOTIFIER_BIN = '/opt/homebrew/bin/terminal-notifier';
 
 // Chime profiles — must match client/client.js playChime() exactly so the
 // notification sound equals the settings-card preview.
@@ -123,11 +128,6 @@ function isAutomationDriven(agent) {
 		return event?.data?.source?.kind === 'automation';
 	}
 	return false;
-}
-
-/** Escape a string for embedding inside a double-quoted AppleScript literal. */
-function appleScriptQuote(input) {
-	return String(input).replace(/\\/gu, '').replace(/"/gu, '');
 }
 
 /**
@@ -257,17 +257,16 @@ class NotificationsService {
 		const cfg = this.getConfig();
 		if (!cfg.enabled) return;
 		if (process.platform !== 'darwin') return;
-		const title = appleScriptQuote(sessionTitleOf(agent));
-		const body = appleScriptQuote(responseTextOf(agent));
-		const script = `display notification "${body}" with title "${title}"`;
-		execFile('/usr/bin/osascript', ['-e', script], { timeout: 5000 }, (error) => {
-			if (error) this.ctx.logger?.warn?.(`[notifications] osascript failed: ${error.message}`);
+		const title = sessionTitleOf(agent);
+		const body = responseTextOf(agent);
+		// terminal-notifier: clicking the banner does NOT open/activate anything
+		// (no -activate argument), and -sound takes our synthesized WAV so the
+		// chime still matches the settings-card preview.
+		const args = ['-title', title, '-message', body, '-group', 'dsh-notifications'];
+		if (cfg.sound) args.push('-sound', chimeWavPath(cfg.tone));
+		execFile(NOTIFIER_BIN, args, { timeout: 5000 }, (error) => {
+			if (error) this.ctx.logger?.warn?.(`[notifications] terminal-notifier failed: ${error.message}`);
 		});
-		if (cfg.sound) {
-			execFile('/usr/bin/afplay', [chimeWavPath(cfg.tone)], { timeout: 10000 }, (error) => {
-				if (error) this.ctx.logger?.warn?.(`[notifications] afplay failed: ${error.message}`);
-			});
-		}
 	}
 
 	/** Merge a client patch into the durable namespace and return the new view. */
@@ -301,7 +300,7 @@ class NotificationsService {
 			const path = url.pathname.replace(/^\/notifications\/?/, '');
 			if (req.method === 'GET' && path === 'status') {
 				// `hostNotify` advertises that THIS loaded host half owns
-				// notification firing (agent/status -> osascript); the client
+				// notification firing (agent/status -> terminal-notifier); the client
 				// defers to the host only when this flag is present, so a stale
 				// host without the listener does not silence notifications.
 				return send(200, { ok: true, hostNotify: true, ...this.getConfig() });

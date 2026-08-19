@@ -2,6 +2,10 @@
 	"name": "dsh-plugin-notifications",
 	"version": "0.1.0",
 	"description": "DSH bundle plugin: a General-settings Notifications card that pops a system notification (and optional chime) when a conversation turn completes.",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/NattoCB/dsh-plugin-notifications.git"
+	},
 	"type": "module",
 	"main": "src/index.js",
 	"exports": {

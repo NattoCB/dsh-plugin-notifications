@@ -1,103 +1,72 @@
-# DSH Notifications Plugin / DSH 对话完成通知插件
+# dsh-plugin-notifications
 
-> **Turns your finished turns into a ping.** A DSH bundle plugin that pops a **macOS system notification** (and an optional synthesized chime) whenever a conversation turn completes — so you never miss the answer while your DSH Web GUI is in another window, minimized, or closed.
+<!-- Hero -->
+<div align="center">
+  <b style="font-size: 1.15em;">Turn 完成 → macOS 系统通知(可选合成提示音)。即使 Web GUI 已关闭或切到其他窗口,照常提醒。</b><br /><br />
+  <a href="https://github.com/NattoCB/dsh-plugin-notifications/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-yellow.svg" /></a>
+  <img alt="platform" src="https://img.shields.io/badge/platform-macOS-blue" /><br /><br />
+  <img alt="对话完成通知" src="https://img.shields.io/badge/-对话完成通知-4d6bfe" />
+  <img alt="macOS系统通知" src="https://img.shields.io/badge/-macOS系统通知-4d6bfe" />
+  <img alt="合成提示音" src="https://img.shields.io/badge/-合成提示音-4d6bfe" />
+  <img alt="Settings卡片" src="https://img.shields.io/badge/-Settings卡片-4d6bfe" />
+  <img alt="离线可用" src="https://img.shields.io/badge/-离线可用-4d6bfe" /><br /><br />
+  <b>监听 <code>agent/status</code> 根会话 running→idle 边沿 · 自有 HTTP API <code>/notifications/status|update</code> · 配置落 <code>$DSH_HOME/settings.yaml</code></b> —— <code>ctx.on('agent/status')</code>
+</div>
 
-## 它解决什么 / The problem
+> 一个 DSH bundle 插件:在「设置 → 通用」新增**对话完成通知**卡片。启用后,任意根会话(跳过 subagent 与 automation)一轮对话结束时,由 **host 进程**弹出 macOS 系统通知——标题为会话名、正文为助手回复(过长截断),并可选播放与卡片试听完全一致的合成提示音。接入:在 web profile 声明依赖与 bundle,重启 `dsh web`。
+>
+> A DSH bundle plugin that adds a **Turn-complete notifications** card to Settings → General. When any root session (subagents and automation runs skipped) finishes a turn, the host process pops a macOS notification — title = session name, body = the assistant reply (truncated) — with an optional chime identical to the in-card preview. Install by declaring it as a dependency and bundle in your web profile, then restart `dsh web`.
 
-Chatting with DSH and tabbing away means missing the moment the answer lands. You either keep staring at the window, or you miss the reply entirely. This plugin moves the "done" signal out of the browser and onto your desktop.
+## ✨ 功能一览 / Features
 
-## 功能 / Features
+- 🔔 **对话完成通知** — host 监听 `agent/status`,在根会话 running→idle 边沿用 `terminal-notifier` 弹系统通知:标题 = 会话名(`session/title` → 首条用户消息 → agent id,UTF-8 安全截断 60B),正文 = 最新助手回复(截断 200B);GUI 关闭也照常。subagent 与 automation 驱动的回合不触发;通知仅提示,点击不打开任何窗口。 / Host fires on the running→idle edge of root sessions; subagent and automation-driven turns are skipped. Clicking the banner does nothing (no `-activate`).
+- 🔊 **合成提示音** — 按音调(柔和 / 清脆 / 低沉)进程内合成 16-bit PCM 单声道 WAV(44.1kHz;20ms 线性起音 + 指数衰减;音符间隔 120ms),经 `terminal-notifier -sound` 播放;与卡片「试听」的 Web Audio 波形参数完全一致,听到即所得。无音频资源,离线可用。 / Chime synthesized to WAV with the exact profiles the card previews in Web Audio — no asset files, works offline.
+- 🎛️ **Settings 卡片** — 渲染进「设置 → 通用」的 `settings.general.item` 插槽,提供启用 / 提示音开关、音调选择与「试听提示音」按钮(该按钮同时作为用户手势触发浏览器通知授权);UI 中英双语。 / Card in Settings → General (zh/en) with enable, sound, tone and a preview button that doubles as the browser's notification-permission gesture.
+- 💾 **持久化与降级** — 配置写入 `$DSH_HOME/settings.yaml`(命名空间 `notifications`),经自有 HTTP API `GET /notifications/status`、`POST /notifications/update`(`settings.mutate` RPC 只放行内置命名空间,第三方走自有路由,与 petdex / wechat-bridge 同模式);host 半未加载时自动降级为浏览器 monitor + localStorage,host 加载后接管,避免双重通知。 / Persists via its own HTTP API into settings.yaml; before the host half loads, the browser monitor + localStorage takes over, then defers to the host.
 
-- 在「设置 → 通用」中新增 **对话完成通知** 卡片。
-- 启用后，任意根会话（跳过 subagent 与 automation）的一轮对话结束时，由 **host 进程**弹出 **macOS 系统通知**：标题为会话名（过长截断），内容为助手回复（过长截断）。即使 Web GUI / PWA 已关闭或切到其他窗口也照常通知。
-- 可选**提示音**：host 侧按设置音调（**柔和 / 清脆 / 低沉**）程序合成 PCM → 临时 WAV → `afplay` 播放，波形与设置卡片里的「试听」Web Audio 预览**完全一致**；无需音频文件，离线可用。
-- 「试听提示音」按钮同时用于触发浏览器的通知授权（浏览器要求用户手势才能申请权限）。
+## Quick Start
 
-- Adds a **Turn-complete notifications** card to **Settings → General**.
-- When enabled, the **host process** pops a **macOS notification** when any root
-  session (subagents and automation runs skipped) finishes a turn — title = session
-  name (truncated), body = the assistant response (truncated). Keeps working with
-  the Web GUI / PWA closed or in another window.
-- Optional **chime**: the host synthesizes PCM from the configured tone
-  (**soft / crisp / low**) into a temp WAV played via `afplay`, with the same
-  waveform as the card's Web Audio preview — the configured tone and the real
-  sound always match. No asset files, works offline.
-- The "Preview chime" button also triggers the browser's notification-permission
-  prompt (browsers require a user gesture to request it).
+### 前置 / Prerequisites
 
-## 行为说明 / How it works
+- macOS(host 使用 Homebrew 前缀路径 `/opt/homebrew`)
+- [terminal-notifier](https://github.com/julienXX/terminal-notifier):`brew install terminal-notifier`(host 弹通知与播放提示音的二进制,路径硬编码 `/opt/homebrew/bin/terminal-notifier`)
+- DSH web profile(`$DSH_HOME/profiles/web`)
 
-- **Host 端**：注册持久化设置命名空间 `notifications`（写入 `$DSH_HOME/settings.yaml`，键 `notifications`）；
-  监听 `agent/status` 事件，在根 agent 的 running→idle 边沿弹通知（`osascript display notification`）并
-  `afplay` 播放合成提示音；暴露自有 HTTP API `/notifications/status`（读）与 `/notifications/update`（写）。
-- **Client 端**：把卡片渲染进通用区的 `settings.general.item` 插槽；当 host 半已加载（`hostNotify` 标志）时，
-  浏览器侧 monitor 静默，由 host 负责弹通知，避免双重通知；host 未加载时退回浏览器侧 monitor + localStorage。
-- 说明：Web 端的 `settings.mutate` RPC 只放行内置命名空间白名单，第三方命名空间无法走该通道；
-  因此本插件走自有 HTTP API（与 petdex / wechat-bridge 同模式）。host 半载入前（例如刚改完代码、
-  尚未重启 `dsh web`），卡片自动降级为浏览器 localStorage，交互与持久化在单浏览器内照常可用；
-  host 半载入后自动切换到 settings.yaml 并同步最新值。
+### 安装 / Install
 
-- **Host half** registers the durable `notifications` settings namespace
-  (`$DSH_HOME/settings.yaml`, key `notifications`), listens to `agent/status` and
-  fires `osascript display notification` + `afplay` on the running→idle edge, and
-  exposes its own HTTP API — `GET /notifications/status`, `POST /notifications/update` —
-  persisting through host-side `settings.update`.
-- **Client half** renders the card into the General section's `settings.general.item`
-  slot. When the host half advertises `hostNotify`, the browser monitor stays silent
-  (host owns firing, no double notifications); otherwise it falls back to the
-  browser monitor + localStorage.
-- Note: the Web `settings.mutate` RPC only admits a built-in namespace allowlist,
-  so third-party namespaces cannot ride it; this plugin uses its own HTTP API
-  (same pattern as the petdex / wechat-bridge bundles). Until the host half is
-  loaded (e.g. right after a code change, before restarting `dsh web`), the card
-  degrades to browser localStorage — interaction and persistence keep working in
-  that browser — and switches to settings.yaml once the host half is live.
+1. 在 `$DSH_HOME/profiles/web/package.json`:
+   - `dependencies` 增加 `"dsh-plugin-notifications": "file:<本仓库路径>"`;
+   - `dsh.profile.bundles` 增加 `"dsh-plugin-notifications"`。
+2. 确保 `node_modules/dsh-plugin-notifications` 可解析到本仓库。
+3. 重启 web profile(`dsh web`)使 host 半生效——否则只有浏览器侧 monitor,GUI 关闭后收不到通知。
 
-## 设置 / Settings（写入 `settings.yaml`）
+### 启用 / Enable
+
+1. 打开 Web GUI → 设置 → 通用 → **对话完成通知**,开启「启用系统通知」。
+2. 可选:开启提示音、选择音调(柔和 / 清脆 / 低沉);点「试听提示音」试听。
+3. macOS 首次弹通知时,在系统提示中授予通知权限。
+
+## Configuration
+
+写入 `$DSH_HOME/settings.yaml`(也可直接在设置卡片中修改):
 
 ```yaml
 notifications:
-  enabled: false   # 一轮对话完成后弹出系统通知 / pop a system notification on turn completion
-  sound: true      # 同时播放提示音 / also play a chime
-  tone: soft       # soft | crisp | low
+  enabled: false   # 一轮对话完成后弹系统通知 / pop a system notification on turn completion
+  sound: true      # 同时播放提示音 / also play the chime
+  tone: soft       # 提示音音调 / chime tone: soft | crisp | low
 ```
 
-## 启用方式 / Enable
-
-1. 在本机 profile（`$DSH_HOME/profiles/web`）的 `package.json` 中：
-   - `dependencies` 增加 `"dsh-plugin-notifications": "file:<本仓库路径>"`；
-   - `dsh.profile.bundles` 增加 `"dsh-plugin-notifications"`。
-2. 确保 `node_modules/dsh-plugin-notifications` 可解析到本仓库。
-3. 重启 web profile（`dsh web`），使 host 半生效（否则只有浏览器侧 monitor，GUI 关闭后收不到）。
-
-1. In the web profile (`$DSH_HOME/profiles/web`) `package.json`:
-   - add `"dsh-plugin-notifications": "file:<path-to-this-repo>"` to `dependencies`;
-   - add `"dsh-plugin-notifications"` to `dsh.profile.bundles`.
-2. Ensure `node_modules/dsh-plugin-notifications` resolves to this folder.
-3. Restart the web profile (`dsh web`) so the host half loads; until then only
-   the browser monitor works (no notifications with the GUI closed).
-
-> 提示：macOS 系统通知需要操作系统级通知授权（首次弹通知时 macOS 会请求）。
-> 提示音由 host 进程经 `afplay` 播放，与浏览器授权无关。
->
-> Note: macOS asks for notification permission on first use. The chime plays via
-> `afplay` from the host process and does not depend on browser permissions.
-
-## Repository layout / 仓库结构
-
-```
-dsh-plugin-notifications/
-├── src/index.js          # Host: registers the `notifications` settings namespace
-├── client/client.js      # Client: General card + turn-complete monitor + chime
-├── cordis.patch.yml      # DSH bundle patch (host registration)
-├── package.json
-└── README.md
-```
-
-## Topics / 标签
-
-`dsh`, `deepseek-harness`, `plugin`, `notification`, `web-audio`
+| Key | Default | Meaning |
+|:----|:--------|:--------|
+| `notifications.enabled` | `false` | 一轮对话完成后弹 macOS 系统通知 |
+| `notifications.sound` | `true` | 通知时同时播放合成提示音 |
+| `notifications.tone` | `soft` | 音调:`soft` 柔和 / `crisp` 清脆 / `low` 低沉 |
 
 ---
 
-**试一下：** 装上、重启、开一条长会话，然后把窗口切走——回复落地时你的桌面会替你看着。有问题或想要更多音调？[提 issue](https://github.com/NattoCB/dsh-plugin-notifications/issues)。
+<div align="center">
+
+[GitHub](https://github.com/NattoCB/dsh-plugin-notifications) · [Issues](https://github.com/NattoCB/dsh-plugin-notifications/issues) · [Changelog](CHANGELOG.md) · **MIT License**
+
+</div>

@@ -10,6 +10,7 @@
   <img alt="合成提示音" src="https://img.shields.io/badge/-合成提示音-4d6bfe" />
   <img alt="Settings卡片" src="https://img.shields.io/badge/-Settings卡片-4d6bfe" />
   <img alt="离线可用" src="https://img.shields.io/badge/-离线可用-4d6bfe" /><br /><br />
+  <a href="https://awesome-dsh-plugin.com"><img src="https://awesome-dsh-plugin.com/badge.svg" alt="awesome · DSH 插件" /></a><br /><br />
   <b>监听 <code>agent/status</code> 根会话 running→idle 边沿 · 自有 HTTP API <code>/notifications/status|update</code> · 配置落 <code>$DSH_HOME/settings.yaml</code></b> —— <code>ctx.on('agent/status')</code>
 </div>
 
